@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>数智云智能客服客户网站演示</title>
+    <style>
+      :root {
+        --text: #15231f;
+        --muted: #64736d;
+        --line: #dce8e3;
+        --accent: #0f8f7e;
+        --accent-dark: #0a6f62;
+        --soft: #eef7f4;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        color: var(--text);
+        background: #ffffff;
+        font-family: "Microsoft YaHei", system-ui, sans-serif;
+      }
+
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 18px min(6vw, 72px);
+        border-bottom: 1px solid var(--line);
+        background: #ffffff;
+      }
+
+      .brand {
+        font-weight: 900;
+        color: var(--accent-dark);
+      }
+
+      nav {
+        display: flex;
+        gap: 18px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      main {
+        min-height: calc(100vh - 70px);
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: minmax(320px, 1fr) minmax(280px, 440px);
+        gap: 42px;
+        align-items: center;
+        padding: 72px min(6vw, 72px);
+        background: linear-gradient(135deg, #f7fcfa, var(--soft));
+      }
+
+      .eyebrow {
+        margin: 0 0 10px;
+        color: var(--accent-dark);
+        font-size: 13px;
+        font-weight: 900;
+        letter-spacing: 0.08em;
+      }
+
+      h1 {
+        max-width: 760px;
+        margin: 0;
+        font-size: 44px;
+        line-height: 1.16;
+      }
+
+      .hero p {
+        max-width: 680px;
+        color: var(--muted);
+        font-size: 17px;
+        line-height: 1.8;
+      }
+
+      .cta-row {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-top: 26px;
+      }
+
+      .button {
+        display: inline-flex;
+        min-height: 44px;
+        align-items: center;
+        border-radius: 8px;
+        padding: 0 18px;
+        text-decoration: none;
+        font-weight: 900;
+      }
+
+      .primary {
+        color: #ffffff;
+        background: var(--accent);
+      }
+
+      .secondary {
+        color: var(--accent-dark);
+        border: 1px solid var(--line);
+        background: #ffffff;
+      }
+
+      .preview {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        overflow: hidden;
+        background: #ffffff;
+        box-shadow: 0 18px 44px rgba(24, 62, 53, 0.12);
+      }
+
+      .preview header {
+        padding: 14px;
+        background: #f6fbf9;
+      }
+
+      .preview-body {
+        display: grid;
+        gap: 12px;
+        padding: 18px;
+      }
+
+      .preview-line {
+        height: 12px;
+        border-radius: 999px;
+        background: var(--soft);
+      }
+
+      .preview-line.short {
+        width: 62%;
+      }
+
+      .features {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 18px;
+        padding: 40px min(6vw, 72px) 72px;
+      }
+
+      .feature {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 18px;
+      }
+
+      .feature h2 {
+        margin: 0 0 8px;
+        font-size: 18px;
+      }
+
+      .feature p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.7;
+      }
+
+      @media (max-width: 840px) {
+        header,
+        nav,
+        .cta-row {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .hero,
+        .features {
+          grid-template-columns: 1fr;
+        }
+
+        h1 {
+          font-size: 34px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="brand">数智云智能技术工作室</div>
+      <nav>
+        <span>产品</span>
+        <span>接入</span>
+        <span>价格</span>
+        <span>支持</span>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div>
+          <p class="eyebrow">SHUZHIYUN AI SERVICE BOT DEMO</p>
+          <h1>把 AI 客服和销售线索收集入口放进你的官网</h1>
+          <p>
+            这是一个模拟客户官网，用来演示数智云智能客服机器人真实嵌入后的效果。点击右下角“客服”按钮，
+            可以测试 FAQ、DeepSeek AI 回复、联系方式收集和后台线索同步。
+          </p>
+          <div class="cta-row">
+            <a class="button primary" href="./index.html">打开管理后台</a>
+            <a class="button secondary" href="#features">查看接入能力</a>
+          </div>
+        </div>
+
+        <aside class="preview" aria-label="网站内容预览">
+          <header>
+            <strong>官网咨询转化页</strong>
+          </header>
+          <div class="preview-body">
+            <div class="preview-line"></div>
+            <div class="preview-line"></div>
+            <div class="preview-line short"></div>
+            <div class="preview-line"></div>
+            <div class="preview-line short"></div>
+          </div>
+        </aside>
+      </section>
+
+      <section id="features" class="features">
+        <article class="feature">
+          <h2>官网嵌入</h2>
+          <p>复制一段 script 到页面，就能在官网右下角展示在线客服入口。</p>
+        </article>
+        <article class="feature">
+          <h2>智能问答</h2>
+          <p>优先回答 FAQ；问题超出规则命中时，由 DeepSeek 基于知识库辅助回答。</p>
+        </article>
+        <article class="feature">
+          <h2>线索收集</h2>
+          <p>客户留下手机号、微信或邮箱后，后台会生成意向等级和跟进摘要。</p>
+        </article>
+      </section>
+    </main>
+
+    <script src="./nimble-widget.js?v=shuzhiyun-reply-mode-20260702"
+      data-business-id="demo"
+      data-api-base="http://127.0.0.1:4173"></script>
+  </body>
+</html>

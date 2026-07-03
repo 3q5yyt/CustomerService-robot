@@ -1,0 +1,25 @@
+{
+  "name": "nimble-customer-service-bot-mvp",
+  "version": "0.2.0",
+  "private": true,
+  "description": "MVP customer service bot with a local API, admin console, and embeddable widget.",
+  "type": "commonjs",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5173",
+    "build": "vite build",
+    "start": "node server.js",
+    "check": "node --check server.js && node --check nimble-widget.js && vite build"
+  },
+  "dependencies": {
+    "lucide-react": "^1.23.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.0.3",
+    "autoprefixer": "^10.5.2",
+    "postcss": "^8.5.16",
+    "tailwindcss": "^3.4.17",
+    "vite": "^8.1.3"
+  }
+}

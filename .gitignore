@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Local runtime data and secrets
+data/*.json
+*.log
+.env
+.env.*
+!.env.example
+
+# Legacy static admin files kept locally for reference
+app.js
+styles.css
+本地留存文件清单.md
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
