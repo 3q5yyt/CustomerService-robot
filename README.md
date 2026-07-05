@@ -1,11 +1,13 @@
 # 数智云智能客服机器人 MVP
 
-这是一个面向中小企业售卖的客服机器人最小可行产品原型。当前版本已经升级为“React 管理后台 + 本地 API + 数据文件 + 可嵌入 widget”的试用版。
+这是一个面向中小企业售卖的客服机器人最小可行产品原型。当前版本已经升级为“React 管理后台 + 企业工作台 + Express API + PostgreSQL + 可嵌入 widget”的试用版。
 
 ## 已实现
 
-- React 管理后台：使用 Vite、React 和 Tailwind CSS 重建页面，支持更清晰的运营台布局。
-- 企业后台：配置企业名称、行业、回复语气、服务时间、人工联系方式和开场欢迎语。
+- 登录页：`/login` 统一承载运营管理员和企业用户登录，后端根据账号角色跳转到对应页面。
+- 平台运营后台：`/admin` 只用于监控已存在企业客户、生成企业 Token、打开企业工作台和重置企业演示数据。
+- 企业工作台：`/portal` 面向企业客户，用企业 Token 管理智能问答、企业后台、嵌入组件、知识库、销售线索、客户网站嵌入代码和运营可视化。
+- 企业后台：企业用户在 `/portal` 配置企业名称、行业、回复语气、服务时间、人工联系方式和开场欢迎语。
 - AI 状态：展示 DeepSeek 是否连接、当前模型和最近一次回复来源。
 - 回复模式：支持 FAQ + AI、FAQ 优先、仅收集线索。
 - 客服回答规则：可配置模型提示词规则，例如不承诺具体价格、优先引导预约演示、限制字数。
@@ -15,7 +17,8 @@
 - 数据看板：展示对话消息数、自动解决率、销售线索数量。
 - 数据导出：支持导出销售线索 CSV。
 - 网站嵌入：生成 `<script>` 代码，通过 `data-business-id` 读取企业配置。
-- 服务端 API：统一处理企业配置、FAQ、线索、聊天状态和会话记录。
+- 服务端 API：使用 Express 统一处理企业配置、FAQ、线索、聊天状态和会话记录。
+- 数据库存储：使用 PostgreSQL 保存企业数据和 API token hash，本地 JSON 仅作为无数据库时的回退。
 - 未命中问题：FAQ 规则没有直接命中的问题会进入后台列表，可一键填入 FAQ 表单补充答案。
 - FAQ 编辑：支持在后台直接编辑、保存和删除已有知识库问题。
 
@@ -24,16 +27,28 @@
 需要先安装 Node.js。首次运行需要安装依赖并构建 React 页面：
 
 ```powershell
-cd D:\Data\AI\customer-service-bot-mvp
+cd D:\CustomerRobot\CustomerService-robot
 npm install
 npm run build
 npm start
 ```
 
-然后访问：
+然后访问登录页：
 
 ```text
-http://127.0.0.1:4173
+http://127.0.0.1:4173/login
+```
+
+平台运营后台：
+
+```text
+http://127.0.0.1:4173/admin
+```
+
+企业客户工作台：
+
+```text
+http://127.0.0.1:4173/portal?businessId=demo
 ```
 
 客户网站嵌入演示页：
@@ -57,7 +72,7 @@ Vite 开发服务默认地址是 `http://127.0.0.1:5173`，API 会代理到 `htt
 默认读取顺序：
 
 1. 环境变量 `DEEPSEEK_API_KEY`
-2. 本地文件 `D:\Data\AI\API KEY.txt`
+2. 本地文件 `D:\CustomerRobot\API KEY.txt`
 
 可选环境变量：
 
@@ -72,46 +87,55 @@ npm start
 
 ## 数据位置
 
-本地试用数据会自动写入：
+当前优先使用 PostgreSQL：
 
 ```text
-D:\Data\AI\customer-service-bot-mvp\data\store.json
+postgres://customer_robot_app:***@127.0.0.1:5432/customer_robot
 ```
 
-这个文件适合本地演示和早期试用。正式部署时建议替换成 PostgreSQL、MySQL、Supabase 或云厂商数据库。
+无 `DATABASE_URL` 时才会回退到本地 JSON 文件：
+
+```text
+D:\CustomerRobot\CustomerService-robot\data\store.json
+```
+
+管理员 API Token 保存在本地环境变量或 `.env`，当前本机辅助文件为 `D:\CustomerRobot\ADMIN_API_TOKEN.txt`。登录页会使用后端签发的 session token；旧的 API Token 方式仍保留用于调试。企业工作台 Token 由 `/admin` 页面生成，数据库只保存 hash。
 
 ## 嵌入代码
 
 后台会生成类似这样的嵌入代码：
 
 ```html
-<script src="http://127.0.0.1:4173/nimble-widget.js"
+<script src="http://127.0.0.1:4173/widget/nimble-widget.js"
   data-business-id="demo"
   data-api-base="http://127.0.0.1:4173"
+  data-public-token="pk_xxx"
   data-reply-mode="faq_ai"></script>
 ```
 
 上线后只需要把域名换成你的 HTTPS 域名，例如：
 
 ```html
-<script src="https://bot.example.com/nimble-widget.js"
+<script src="https://bot.example.com/widget/nimble-widget.js"
   data-business-id="demo"
   data-api-base="https://bot.example.com"
+  data-public-token="pk_xxx"
   data-reply-mode="faq_ai"></script>
 ```
 
 ## API 摘要
 
 - `GET /api/health`：健康检查。
-- `GET /api/businesses/demo`：读取企业完整配置。
-- `PUT /api/businesses/demo/company`：更新企业资料。
-- `POST /api/businesses/demo/faqs`：新增 FAQ。
-- `PUT /api/businesses/demo/faqs/:faqId`：编辑 FAQ。
-- `DELETE /api/businesses/demo/faqs/:faqId`：删除 FAQ。
-- `GET /api/businesses/demo/leads/export`：导出销售线索 CSV。
-- `POST /api/businesses/demo/chat`：发送客户消息，返回机器人回复。
-- `GET /api/businesses/demo/public`：widget 读取公开配置。
-- `POST /api/businesses/demo/reset`：重置演示数据。
+- `POST /api/auth/login`：统一登录接口，返回 admin 或 portal session。
+- `GET /api/admin/businesses`：平台管理员查看企业客户列表和汇总指标，需要 `ADMIN_API_TOKEN`。
+- `GET /api/admin/businesses/demo`：平台管理员读取企业完整配置，需要 `ADMIN_API_TOKEN`。
+- `POST /api/admin/businesses/demo/tokens/portal`：平台管理员生成或轮换企业工作台 Token。
+- `GET /api/portal/businesses/demo`：企业客户读取自己的企业配置，需要企业 Token。
+- `PUT /api/portal/businesses/demo/company`：企业客户更新企业资料、回复规则和组件样式。
+- `POST /api/portal/businesses/demo/faqs`：企业客户新增 FAQ。
+- `GET /api/portal/businesses/demo/leads/export`：企业客户导出销售线索 CSV。
+- `GET /api/widget/businesses/demo/public`：widget 读取公开配置，需要 public token。
+- `POST /api/widget/businesses/demo/chat`：widget 发送客户消息，返回机器人回复，需要 public token。
 
 ## 推荐演示话术
 
@@ -124,8 +148,8 @@ D:\Data\AI\customer-service-bot-mvp\data\store.json
 ## 当前边界
 
 - 当前检索是轻量规则匹配，适合演示高频 FAQ；正式版建议接入 RAG 知识库。
-- 还没有登录权限、套餐计费、多租户管理界面和审计日志。
-- 当前数据存储仍是本地 JSON 文件，正式上线建议替换为云数据库。
+- 当前是 API Token 登录，还没有账号密码、短信/邮箱验证、套餐计费和审计日志。
+- 当前企业数据仍先以 JSONB 保存，正式多租户上线前建议逐步拆成 users、business_members、faqs、leads、conversations、messages 等关系表。
 
 ## 下一步产品路线
 

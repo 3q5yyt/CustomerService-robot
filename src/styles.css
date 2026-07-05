@@ -1,0 +1,70 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-[#f8fafd] text-[#202124] antialiased;
+    font-family: Inter, "HarmonyOS Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+  }
+}
+
+@layer components {
+  .section-card {
+    @apply rounded-2xl border border-[#dadce0] bg-white shadow-sm;
+  }
+
+  .section-title {
+    @apply text-lg font-black text-[#202124];
+  }
+
+  .badge {
+    @apply inline-flex items-center rounded-full border border-[#dadce0] px-3 py-1 text-xs font-black text-[#5f6368] shadow-sm;
+  }
+
+  .btn-primary,
+  .btn-secondary,
+  .btn-danger {
+    @apply inline-flex min-h-10 items-center justify-center rounded-lg px-3 py-2 text-sm font-black transition disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  .btn-primary {
+    @apply bg-[#1a73e8] text-white shadow-sm hover:bg-[#1558b0];
+  }
+
+  .btn-secondary {
+    @apply border border-[#dadce0] bg-white text-[#3c4043] hover:bg-[#f8fafd];
+  }
+
+  .btn-danger {
+    @apply border border-[#fad2cf] bg-[#fce8e6] text-[#c5221f] hover:bg-[#fad2cf];
+  }
+
+  .field-label {
+    @apply grid gap-1.5 text-xs font-black text-[#5f6368];
+  }
+
+  .field-control,
+  .field-textarea {
+    @apply w-full rounded-lg border border-[#dadce0] bg-white px-3 py-2 text-sm font-semibold text-[#202124] outline-none transition placeholder:text-[#9aa0a6] focus:border-[#1a73e8] focus:ring-2 focus:ring-[#d2e3fc];
+  }
+
+  .field-textarea {
+    @apply min-h-24 resize-y leading-6;
+  }
+
+  .faq-scroll-panel {
+    @apply max-h-[520px] overflow-y-auto overscroll-contain pr-1;
+  }
+}

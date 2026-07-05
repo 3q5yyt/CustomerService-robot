@@ -1,20 +1,53 @@
 const crypto = require("node:crypto");
-const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const https = require("node:https");
-const http = require("node:http");
 const path = require("node:path");
 const { URL } = require("node:url");
+const express = require("express");
+const { Pool } = require("pg");
+
+require("dotenv").config({ quiet: true });
 
 const PORT = Number(process.env.PORT || 4173);
 const ROOT_DIR = __dirname;
 const DIST_DIR = path.join(ROOT_DIR, "dist");
 const DATA_DIR = path.join(ROOT_DIR, "data");
 const STORE_FILE = path.join(DATA_DIR, "store.json");
+const DATABASE_URL = process.env.DATABASE_URL || "";
+const USE_POSTGRES = Boolean(DATABASE_URL);
+const ADMIN_API_TOKEN_HASH = process.env.ADMIN_API_TOKEN ? hashToken(process.env.ADMIN_API_TOKEN) : "";
+const AUTH_SESSION_SECRET = process.env.AUTH_SESSION_SECRET || process.env.ADMIN_API_TOKEN || "customer-robot-local-session-secret";
+const AUTH_SESSION_TTL_MS = 1000 * 60 * 60 * 12;
 const DEEPSEEK_BASE_URL = (process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com").replace(/\/+$/, "");
 const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-v4-flash";
 const DEEPSEEK_KEY_FILE = process.env.DEEPSEEK_API_KEY_FILE || path.join(ROOT_DIR, "..", "API KEY.txt");
 let cachedDeepSeekApiKey;
+let pgPool;
+let pgSchemaReady = false;
+
+const demoLoginUsers = [
+  {
+    email: "481259634@qq.com",
+    passwordHash: "98abaa5dfb0f2c2b7d324daf468a08eaade320a5ef8c58e92d7f0a1fb7e718b9",
+    role: "admin",
+    name: "运营管理员"
+  },
+  {
+    email: "test@mail.com",
+    passwordHash: "8d969eef6ecad3c29a3a629280e686cf0c3f5d5a86aff3ca12020c923adc6c92",
+    role: "portal",
+    businessId: "demo",
+    name: "数智云智能技术工作室"
+  }
+];
+
+const defaultWidgetConfig = {
+  name: "数智云在线客服",
+  themeColor: "#1a73e8",
+  position: "bottom-right",
+  welcome: "欢迎咨询数智云智能客服机器人，请问您想了解功能、价格、接入方式，还是预约演示？",
+  quickQuestions: ["数智云智能客服机器人是什么？", "怎么接入企业官网？", "怎么收费？", "我要预约演示"]
+};
 
 const defaultCompany = {
   name: "数智云智能技术工作室",
@@ -22,7 +55,8 @@ const defaultCompany = {
   tone: "专业简洁",
   serviceHours: "工作日 09:00-18:00，非工作时间自动收集线索",
   contact: "电话：18279169910 / 微信：zh101136 / QQ：481259634",
-  welcome: "欢迎咨询数智云智能客服机器人，请问您想了解功能、价格、接入方式，还是预约演示？"
+  welcome: "欢迎咨询数智云智能客服机器人，请问您想了解功能、价格、接入方式，还是预约演示？",
+  widget: clone(defaultWidgetConfig)
 };
 
 const defaultAnswerRules = [
@@ -118,58 +152,95 @@ const defaultFaqs = [
   }
 ];
 
-const mimeTypes = {
-  ".css": "text/css; charset=utf-8",
-  ".html": "text/html; charset=utf-8",
-  ".ico": "image/x-icon",
-  ".js": "text/javascript; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".map": "application/json; charset=utf-8",
-  ".png": "image/png",
-  ".svg": "image/svg+xml; charset=utf-8",
-  ".txt": "text/plain; charset=utf-8"
-};
+const app = express();
+app.disable("x-powered-by");
 
-const server = http.createServer(async (req, res) => {
-  try {
-    const requestUrl = new URL(req.url, `http://${req.headers.host || "127.0.0.1"}`);
-
-    if (requestUrl.pathname.startsWith("/api/")) {
-      await handleApi(req, res, requestUrl);
-      return;
-    }
-
-    if (req.method !== "GET" && req.method !== "HEAD") {
-      sendText(res, 405, "Method Not Allowed");
-      return;
-    }
-
-    await serveStatic(req, res, requestUrl);
-  } catch (error) {
-    console.error(error);
-    sendJson(res, 500, { error: "服务器内部错误" });
+app.use("/api", (req, res, next) => {
+  setCorsHeaders(res);
+  if (req.method === "OPTIONS") {
+    res.status(204).end();
+    return;
   }
+  next();
+});
+app.use("/api", express.json({ limit: "1mb" }));
+app.use("/api", asyncHandler(handleApi));
+
+app.get(["/widget/nimble-widget.js", "/nimble-widget.js"], (req, res) => {
+  sendStaticFile(res, path.join(ROOT_DIR, "nimble-widget.js"), "no-cache");
+});
+app.get("/demo-site.html", (req, res) => {
+  sendStaticFile(res, path.join(ROOT_DIR, "demo-site.html"), "no-store");
+});
+app.get("/", (req, res) => {
+  res.redirect(302, "/login");
+});
+app.use(["/login", "/admin", "/portal"], (req, res, next) => {
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    sendText(res, 405, "Method Not Allowed");
+    return;
+  }
+
+  if (path.extname(req.path)) {
+    next();
+    return;
+  }
+
+  sendStaticFile(res, path.join(DIST_DIR, "index.html"), "no-store");
+});
+app.use(express.static(DIST_DIR, {
+  setHeaders(res, filePath) {
+    const ext = path.extname(filePath).toLowerCase();
+    res.setHeader("Cache-Control", ext === ".js" || ext === ".css" ? "no-cache" : "no-store");
+  }
+}));
+app.use((req, res) => {
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    sendText(res, 405, "Method Not Allowed");
+    return;
+  }
+
+  if (path.extname(req.path)) {
+    sendText(res, 404, "Not Found");
+    return;
+  }
+
+  sendStaticFile(res, path.join(DIST_DIR, "index.html"), "no-store");
+});
+app.use((error, req, res, next) => {
+  console.error(error);
+  if (res.headersSent) {
+    next(error);
+    return;
+  }
+  sendJson(res, error.status || 500, { error: error.status ? error.message : "服务器内部错误" });
 });
 
-server.listen(PORT, () => {
+app.listen(PORT, () => {
   console.log(`数智云智能客服机器人已启动：http://127.0.0.1:${PORT}`);
+  console.log(`数据存储：${USE_POSTGRES ? "PostgreSQL" : "本地 JSON 文件"}`);
 });
 
-async function handleApi(req, res, requestUrl) {
+async function handleApi(req, res) {
+  const requestUrl = new URL(req.originalUrl, `http://${req.headers.host || "127.0.0.1"}`);
   setCorsHeaders(res);
 
   if (req.method === "OPTIONS") {
-    res.writeHead(204);
-    res.end();
+    res.status(204).end();
     return;
   }
 
   const segments = requestUrl.pathname.split("/").filter(Boolean).map(decodeURIComponent);
 
   if (req.method === "GET" && segments.length === 2 && segments[1] === "health") {
+    if (USE_POSTGRES) {
+      await ensurePostgresSchema();
+    }
+
     sendJson(res, 200, {
       ok: true,
       service: "nimble-customer-service-bot",
+      storage: USE_POSTGRES ? "postgresql" : "json",
       ai: {
         provider: "deepseek",
         model: DEEPSEEK_MODEL,
@@ -179,19 +250,105 @@ async function handleApi(req, res, requestUrl) {
     return;
   }
 
-  if (segments[1] !== "businesses" || !segments[2]) {
+  if (segments[1] === "auth" && segments[2] === "login") {
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method Not Allowed" });
+      return;
+    }
+
+    const body = await readJsonBody(req);
+    const user = authenticateDemoUser(body.email, body.password);
+    if (!user) {
+      sendJson(res, 401, { error: "邮箱或密码不正确" });
+      return;
+    }
+
+    const session = createAuthSession(user);
+    sendJson(res, 200, {
+      session,
+      redirectTo: user.role === "admin" ? "/admin" : `/portal?businessId=${encodeURIComponent(user.businessId)}`
+    });
+    return;
+  }
+
+  if (segments[1] === "admin" && segments[2] === "businesses" && !segments[3]) {
+    if (!(await requireAdminApiToken(req, res))) {
+      return;
+    }
+
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "Method Not Allowed" });
+      return;
+    }
+
+    const store = await loadStore();
+    const businesses = await buildAdminBusinessSummaries(store);
+    sendJson(res, 200, {
+      businesses,
+      totals: buildAdminTotals(businesses)
+    });
+    return;
+  }
+
+  const route = parseBusinessApiRoute(segments);
+  if (!route) {
     sendJson(res, 404, { error: "API 路径不存在" });
     return;
   }
 
-  const businessId = sanitizeId(segments[2]);
-  const resource = segments[3] || "";
+  if (route.surface === "admin" && !(await requireAdminApiToken(req, res))) {
+    return;
+  }
+
+  if (route.surface === "portal" && !(await requirePortalApiToken(req, res, route.businessId))) {
+    return;
+  }
+
+  const businessId = route.businessId;
+  const resource = route.resource;
+  const resourceId = route.resourceId;
   const store = await loadStore();
   const business = ensureBusiness(store, businessId);
 
-    if (req.method === "GET" && !resource) {
+  if (route.surface === "portal" && !isPortalRouteAllowed(req.method, resource, resourceId)) {
+    sendJson(res, 403, { error: "企业 API 无权访问该资源" });
+    return;
+  }
+
+  if (route.surface === "widget" && !isWidgetRouteAllowed(req.method, resource)) {
+    sendJson(res, 404, { error: "API 路径不存在" });
+    return;
+  }
+
+  if (route.surface === "widget" && !isWidgetRequestAuthorized(req, business)) {
+    sendJson(res, 401, { error: "Widget token 无效" });
+    return;
+  }
+
+  if (req.method === "GET" && !resource) {
     sendJson(res, 200, { business });
     return;
+  }
+
+  if (route.surface === "admin" && resource === "tokens" && resourceId === "portal") {
+    if (req.method === "POST") {
+      await saveStore(store);
+      const token = await issuePortalToken(businessId);
+      sendJson(res, 201, {
+        businessId,
+        token,
+        tokenType: "portal",
+        header: "Authorization: Bearer <token>",
+        note: "企业 Token 只在本次响应中返回，请交给对应企业用户保存。"
+      });
+      return;
+    }
+
+    if (req.method === "GET") {
+      const active = await hasActivePortalToken(businessId);
+      sendJson(res, 200, { businessId, active });
+      return;
+    }
   }
 
   if (req.method === "GET" && resource === "public") {
@@ -225,6 +382,7 @@ async function handleApi(req, res, requestUrl) {
       if (body.settings) {
         business.settings = normalizeBotSettings(body.settings);
       }
+      business.updatedAt = new Date().toISOString();
       await saveStore(store);
       sendJson(res, 200, { business });
       return;
@@ -277,8 +435,8 @@ async function handleApi(req, res, requestUrl) {
       return;
     }
 
-    if ((req.method === "PUT" || req.method === "PATCH") && segments[4]) {
-      const faqId = segments[4];
+    if ((req.method === "PUT" || req.method === "PATCH") && resourceId) {
+      const faqId = resourceId;
       const body = await readJsonBody(req);
       const faq = business.faqs.find((item) => item.id === faqId);
 
@@ -304,8 +462,8 @@ async function handleApi(req, res, requestUrl) {
       return;
     }
 
-    if (req.method === "DELETE" && segments[4]) {
-      const faqId = segments[4];
+    if (req.method === "DELETE" && resourceId) {
+      const faqId = resourceId;
       const before = business.faqs.length;
       business.faqs = business.faqs.filter((faq) => faq.id !== faqId);
 
@@ -327,8 +485,8 @@ async function handleApi(req, res, requestUrl) {
       return;
     }
 
-    if (req.method === "DELETE" && segments[4]) {
-      const questionId = segments[4];
+    if (req.method === "DELETE" && resourceId) {
+      const questionId = resourceId;
       const before = business.unmatchedQuestions.length;
       business.unmatchedQuestions = business.unmatchedQuestions.filter((item) => item.id !== questionId);
 
@@ -344,7 +502,7 @@ async function handleApi(req, res, requestUrl) {
     }
   }
 
-  if (req.method === "GET" && resource === "leads" && segments[4] === "export") {
+  if (req.method === "GET" && resource === "leads" && resourceId === "export") {
     const csv = buildLeadsCsv(business.leads);
     sendCsv(res, 200, csv, `sales-leads-${businessId}-${timestampForFilename()}.csv`);
     return;
@@ -355,8 +513,8 @@ async function handleApi(req, res, requestUrl) {
     return;
   }
 
-  if (req.method === "GET" && resource === "conversations" && segments[4]) {
-    const visitorId = sanitizeVisitorId(segments[4]);
+  if (req.method === "GET" && resource === "conversations" && resourceId) {
+    const visitorId = sanitizeVisitorId(resourceId);
     const conversation = business.conversations && business.conversations[visitorId];
 
     if (!conversation) {
@@ -406,49 +564,343 @@ async function handleApi(req, res, requestUrl) {
   sendJson(res, 404, { error: "API 路径不存在" });
 }
 
-async function serveStatic(req, res, requestUrl) {
-  const pathname = requestUrl.pathname === "/" ? "/index.html" : requestUrl.pathname;
-  const decodedPath = decodeURIComponent(pathname);
-  const filePath = await findStaticFile(decodedPath);
-
-  if (!filePath) {
-    sendText(res, 404, "Not Found");
-    return;
+function parseBusinessApiRoute(segments) {
+  if (segments[1] === "admin" && segments[2] === "businesses" && segments[3]) {
+    return {
+      surface: "admin",
+      businessId: sanitizeId(segments[3]),
+      resource: segments[4] || "",
+      resourceId: segments[5] || ""
+    };
   }
 
-  const ext = path.extname(filePath).toLowerCase();
-  res.writeHead(200, {
-    "Content-Type": mimeTypes[ext] || "application/octet-stream",
-    "Cache-Control": ext === ".js" || ext === ".css" ? "no-cache" : "no-store"
-  });
-
-  if (req.method === "HEAD") {
-    res.end();
-    return;
+  if (segments[1] === "portal" && segments[2] === "businesses" && segments[3]) {
+    return {
+      surface: "portal",
+      businessId: sanitizeId(segments[3]),
+      resource: segments[4] || "",
+      resourceId: segments[5] || ""
+    };
   }
 
-  fs.createReadStream(filePath).pipe(res);
+  if (segments[1] === "widget" && segments[2] === "businesses" && segments[3]) {
+    return {
+      surface: "widget",
+      businessId: sanitizeId(segments[3]),
+      resource: segments[4] || "",
+      resourceId: segments[5] || ""
+    };
+  }
+
+  if (segments[1] === "businesses" && segments[2]) {
+    return {
+      surface: "legacy",
+      businessId: sanitizeId(segments[2]),
+      resource: segments[3] || "",
+      resourceId: segments[4] || ""
+    };
+  }
+
+  return null;
 }
 
-async function findStaticFile(decodedPath) {
-  const roots = [DIST_DIR, ROOT_DIR];
-
-  for (const root of roots) {
-    const filePath = path.normalize(path.join(root, decodedPath));
-    if (!filePath.startsWith(root)) return "";
-
-    try {
-      const stat = await fsp.stat(filePath);
-      if (stat.isFile()) return filePath;
-    } catch (error) {
-      // Try the next static root.
-    }
+async function requireAdminApiToken(req, res) {
+  const token = getApiToken(req);
+  if (!token) {
+    sendJson(res, 401, { error: "缺少后台 API Token" });
+    return false;
   }
 
-  return "";
+  const session = verifyAuthSessionToken(token);
+  if (session && session.role === "admin") return true;
+
+  const tokenHash = hashToken(token);
+  if (await isAdminTokenHashAuthorized(tokenHash)) return true;
+
+  sendJson(res, 401, { error: "后台 API Token 无效" });
+  return false;
+}
+
+async function requirePortalApiToken(req, res, businessId) {
+  const token = getApiToken(req);
+  if (!token) {
+    sendJson(res, 401, { error: "缺少企业 API Token" });
+    return false;
+  }
+
+  const session = verifyAuthSessionToken(token);
+  if (session && session.role === "admin") return true;
+  if (session && session.role === "portal" && session.businessId === businessId) return true;
+
+  const tokenHash = hashToken(token);
+  if (await isAdminTokenHashAuthorized(tokenHash)) return true;
+
+  if (USE_POSTGRES) {
+    await ensurePostgresSchema();
+    const result = await getPostgresPool().query(
+      `
+        update api_tokens
+        set last_used_at = now()
+        where token_hash = $1
+          and business_id = $2
+          and token_type = 'portal'
+          and revoked_at is null
+        returning 1
+      `,
+      [tokenHash, businessId]
+    );
+    if (result.rowCount > 0) return true;
+  }
+
+  sendJson(res, 401, { error: "企业 API Token 无效" });
+  return false;
+}
+
+async function isAdminTokenHashAuthorized(tokenHash) {
+  if (ADMIN_API_TOKEN_HASH && safeEqual(tokenHash, ADMIN_API_TOKEN_HASH)) {
+    return true;
+  }
+
+  if (!USE_POSTGRES) return false;
+
+  await ensurePostgresSchema();
+  const result = await getPostgresPool().query(
+    `
+      update api_tokens
+      set last_used_at = now()
+      where token_hash = $1
+        and token_type = 'admin'
+        and revoked_at is null
+      returning 1
+    `,
+    [tokenHash]
+  );
+  return result.rowCount > 0;
+}
+
+function getApiToken(req) {
+  return getBearerToken(req) || String(req.get("x-api-token") || "").trim();
+}
+
+function authenticateDemoUser(email, password) {
+  const normalizedEmail = normalizeEmail(email);
+  const passwordHash = hashToken(String(password || ""));
+  return demoLoginUsers.find((user) => (
+    user.email === normalizedEmail &&
+    safeEqual(user.passwordHash, passwordHash)
+  ));
+}
+
+function createAuthSession(user) {
+  const expiresAt = Date.now() + AUTH_SESSION_TTL_MS;
+  const payload = {
+    v: 1,
+    role: user.role,
+    email: user.email,
+    name: user.name,
+    businessId: user.businessId || "",
+    expiresAt
+  };
+
+  return {
+    token: signAuthSessionPayload(payload),
+    role: user.role,
+    email: user.email,
+    name: user.name,
+    businessId: user.businessId || "",
+    expiresAt: new Date(expiresAt).toISOString()
+  };
+}
+
+function signAuthSessionPayload(payload) {
+  const encodedPayload = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  const signature = crypto
+    .createHmac("sha256", AUTH_SESSION_SECRET)
+    .update(encodedPayload)
+    .digest("base64url");
+  return `ses_${encodedPayload}.${signature}`;
+}
+
+function verifyAuthSessionToken(token) {
+  const text = String(token || "").trim();
+  if (!text.startsWith("ses_")) return null;
+
+  const [encodedPayload, signature] = text.slice(4).split(".");
+  if (!encodedPayload || !signature) return null;
+
+  const expectedSignature = crypto
+    .createHmac("sha256", AUTH_SESSION_SECRET)
+    .update(encodedPayload)
+    .digest("base64url");
+  if (!safeEqual(signature, expectedSignature)) return null;
+
+  try {
+    const payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8"));
+    if (!payload || payload.v !== 1) return null;
+    if (!["admin", "portal"].includes(payload.role)) return null;
+    if (!payload.expiresAt || Date.now() > Number(payload.expiresAt)) return null;
+    return {
+      role: payload.role,
+      email: normalizeEmail(payload.email),
+      name: String(payload.name || ""),
+      businessId: sanitizeId(payload.businessId || "")
+    };
+  } catch (error) {
+    return null;
+  }
+}
+
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function isPortalRouteAllowed(method, resource, resourceId) {
+  if (!resource) return method === "GET";
+  if (resource === "company" || resource === "settings") return method === "GET" || method === "PUT";
+  if (resource === "faqs") {
+    return method === "GET" || method === "POST" || (Boolean(resourceId) && ["PUT", "PATCH", "DELETE"].includes(method));
+  }
+  if (resource === "unmatched") return method === "GET" || (method === "DELETE" && Boolean(resourceId));
+  if (resource === "leads") return method === "GET" && (!resourceId || resourceId === "export");
+  if (resource === "conversations") return method === "GET" && Boolean(resourceId);
+  if (resource === "stats") return method === "GET";
+  if (resource === "chat") return method === "POST";
+  return false;
+}
+
+function isWidgetRouteAllowed(method, resource) {
+  return (method === "GET" && resource === "public") || (method === "POST" && resource === "chat");
+}
+
+function isWidgetRequestAuthorized(req, business) {
+  const expectedToken = normalizePublicToken(business.publicToken, business.id);
+  const providedToken = String(
+    req.get("x-widget-token") ||
+    req.query.publicToken ||
+    req.query.token ||
+    (req.body && req.body.publicToken) ||
+    ""
+  ).trim();
+
+  if (!expectedToken) return true;
+  if (!providedToken || !safeEqual(providedToken, expectedToken)) return false;
+
+  const origins = Array.isArray(business.allowedOrigins) ? business.allowedOrigins : [];
+  if (origins.length === 0) return true;
+
+  const origin = String(req.get("origin") || "").trim().toLowerCase();
+  if (!origin) return true;
+  return origins.some((allowed) => origin === allowed.toLowerCase());
+}
+
+async function buildAdminBusinessSummaries(store) {
+  const entries = Object.entries(store.businesses || {});
+  const portalTokenBusinessIds = await getBusinessIdsWithActivePortalTokens(entries.map(([id]) => id));
+
+  return entries
+    .map(([id, business]) => {
+      const stats = business.stats || {};
+      const messages = Number(stats.messages) || 0;
+      const resolved = Number(stats.resolved) || 0;
+      const escalated = Number(stats.escalated) || 0;
+      const leads = Array.isArray(business.leads) ? business.leads.length : 0;
+      const faqs = Array.isArray(business.faqs) ? business.faqs.length : 0;
+      const unmatched = Array.isArray(business.unmatchedQuestions) ? business.unmatchedQuestions.length : 0;
+
+      return {
+        id,
+        companyName: business.company && business.company.name ? business.company.name : id,
+        industry: business.company && business.company.industry ? business.company.industry : "",
+        replyMode: business.settings && business.settings.replyMode ? business.settings.replyMode : defaultBotSettings.replyMode,
+        messages,
+        resolved,
+        escalated,
+        leads,
+        faqs,
+        unmatched,
+        resolveRate: calculateResolveRate(stats),
+        portalTokenActive: portalTokenBusinessIds.has(id),
+        allowedOriginsCount: Array.isArray(business.allowedOrigins) ? business.allowedOrigins.length : 0,
+        createdAt: business.createdAt || "",
+        updatedAt: business.updatedAt || ""
+      };
+    })
+    .sort((left, right) => String(right.updatedAt || "").localeCompare(String(left.updatedAt || "")));
+}
+
+async function getBusinessIdsWithActivePortalTokens(businessIds) {
+  if (!USE_POSTGRES || businessIds.length === 0) return new Set();
+
+  await ensurePostgresSchema();
+  const result = await getPostgresPool().query(
+    `
+      select business_id
+      from api_tokens
+      where token_type = 'portal'
+        and revoked_at is null
+        and business_id = any($1::text[])
+    `,
+    [businessIds]
+  );
+
+  return new Set(result.rows.map((row) => row.business_id).filter(Boolean));
+}
+
+function buildAdminTotals(businesses) {
+  return businesses.reduce(
+    (totals, business) => {
+      totals.businesses += 1;
+      totals.messages += business.messages;
+      totals.resolved += business.resolved;
+      totals.escalated += business.escalated;
+      totals.leads += business.leads;
+      totals.faqs += business.faqs;
+      totals.unmatched += business.unmatched;
+      totals.portalTokens += business.portalTokenActive ? 1 : 0;
+      totals.resolveRate = calculateResolveRate({
+        messages: totals.messages,
+        resolved: totals.resolved,
+        escalated: totals.escalated
+      });
+      return totals;
+    },
+    {
+      businesses: 0,
+      messages: 0,
+      resolved: 0,
+      escalated: 0,
+      leads: 0,
+      faqs: 0,
+      unmatched: 0,
+      portalTokens: 0,
+      resolveRate: 0
+    }
+  );
+}
+
+function calculateResolveRate(stats) {
+  const totalHandled = (Number(stats.resolved) || 0) + (Number(stats.escalated) || 0);
+  return totalHandled === 0 ? 0 : Math.round(((Number(stats.resolved) || 0) / totalHandled) * 100);
 }
 
 async function loadStore() {
+  if (USE_POSTGRES) {
+    return loadPostgresStore();
+  }
+
+  return loadJsonStore();
+}
+
+async function saveStore(store) {
+  if (USE_POSTGRES) {
+    await savePostgresStore(store);
+    return;
+  }
+
+  await saveJsonStore(store);
+}
+
+async function loadJsonStore() {
   await fsp.mkdir(DATA_DIR, { recursive: true });
 
   try {
@@ -462,16 +914,171 @@ async function loadStore() {
     return normalizeStore(store);
   } catch (error) {
     const store = createStore();
-    await saveStore(store);
+    await saveJsonStore(store);
     return store;
   }
 }
 
-async function saveStore(store) {
+async function saveJsonStore(store) {
   await fsp.mkdir(DATA_DIR, { recursive: true });
   const tempFile = `${STORE_FILE}.tmp`;
   await fsp.writeFile(tempFile, JSON.stringify(store, null, 2), "utf8");
   await fsp.rename(tempFile, STORE_FILE);
+}
+
+async function loadPostgresStore() {
+  await ensurePostgresSchema();
+  const result = await getPostgresPool().query("select id, data from businesses order by id");
+
+  if (result.rows.length === 0) {
+    const jsonStore = await loadJsonStore();
+    await savePostgresStore(jsonStore);
+    return jsonStore;
+  }
+
+  const businesses = {};
+
+  result.rows.forEach((row) => {
+    businesses[sanitizeId(row.id)] = row.data;
+  });
+
+  const store = normalizeStore({ schemaVersion: 1, businesses });
+  if (!store.businesses.demo) {
+    store.businesses.demo = createBusiness("demo");
+    await savePostgresStore(store);
+  }
+
+  return store;
+}
+
+async function savePostgresStore(store) {
+  await ensurePostgresSchema();
+  const normalized = normalizeStore(store);
+  const client = await getPostgresPool().connect();
+
+  try {
+    await client.query("begin");
+    for (const [id, business] of Object.entries(normalized.businesses)) {
+      await client.query(
+        `
+          insert into businesses (id, data, created_at, updated_at)
+          values ($1, $2::jsonb, coalesce(($2::jsonb ->> 'createdAt')::timestamptz, now()), now())
+          on conflict (id) do update set
+            data = excluded.data,
+            updated_at = now()
+        `,
+        [id, JSON.stringify(business)]
+      );
+    }
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function issuePortalToken(businessId) {
+  if (!USE_POSTGRES) {
+    throw Object.assign(new Error("企业 Token 需要启用 PostgreSQL"), { status: 503 });
+  }
+
+  await ensurePostgresSchema();
+  const token = `pt_${crypto.randomBytes(24).toString("hex")}`;
+  const tokenHash = hashToken(token);
+  const tokenId = `portal-${businessId}`;
+
+  await getPostgresPool().query(
+    `
+      insert into api_tokens (id, business_id, token_hash, token_type, name, scopes)
+      values ($1, $2, $3, 'portal', 'Business portal token', '["portal:business:read","portal:business:write"]'::jsonb)
+      on conflict (id) do update set
+        token_hash = excluded.token_hash,
+        name = excluded.name,
+        scopes = excluded.scopes,
+        last_used_at = null,
+        revoked_at = null
+    `,
+    [tokenId, businessId, tokenHash]
+  );
+
+  return token;
+}
+
+async function hasActivePortalToken(businessId) {
+  if (!USE_POSTGRES) return false;
+
+  await ensurePostgresSchema();
+  const result = await getPostgresPool().query(
+    `
+      select 1
+      from api_tokens
+      where business_id = $1
+        and token_type = 'portal'
+        and revoked_at is null
+      limit 1
+    `,
+    [businessId]
+  );
+  return result.rowCount > 0;
+}
+
+function getPostgresPool() {
+  if (!pgPool) {
+    pgPool = new Pool({
+      connectionString: DATABASE_URL,
+      ssl: process.env.DATABASE_SSL === "1" ? { rejectUnauthorized: false } : undefined
+    });
+  }
+  return pgPool;
+}
+
+async function ensurePostgresSchema() {
+  if (pgSchemaReady) return;
+
+  await getPostgresPool().query(`
+    create table if not exists businesses (
+      id text primary key,
+      data jsonb not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    );
+
+    create index if not exists businesses_data_gin_idx on businesses using gin (data);
+
+    create table if not exists api_tokens (
+      id text primary key,
+      business_id text references businesses(id) on delete cascade,
+      token_hash text not null unique,
+      token_type text not null check (token_type in ('admin', 'portal', 'widget')),
+      name text not null,
+      scopes jsonb not null default '[]'::jsonb,
+      created_at timestamptz not null default now(),
+      last_used_at timestamptz,
+      revoked_at timestamptz
+    );
+
+    create index if not exists api_tokens_business_id_idx on api_tokens(business_id);
+    create index if not exists api_tokens_token_type_idx on api_tokens(token_type);
+
+    alter table api_tokens drop constraint if exists api_tokens_token_type_check;
+    alter table api_tokens
+      add constraint api_tokens_token_type_check check (token_type in ('admin', 'portal', 'widget'));
+  `);
+  if (ADMIN_API_TOKEN_HASH) {
+    await getPostgresPool().query(
+      `
+        insert into api_tokens (id, business_id, token_hash, token_type, name, scopes)
+        values ('local-admin', null, $1, 'admin', 'Local admin token', '["admin:*"]'::jsonb)
+        on conflict (id) do update set
+          token_hash = excluded.token_hash,
+          revoked_at = null
+      `,
+      [ADMIN_API_TOKEN_HASH]
+    );
+  }
+  pgSchemaReady = true;
 }
 
 function createStore() {
@@ -511,6 +1118,8 @@ function createBusiness(id) {
   const now = new Date().toISOString();
   return {
     id,
+    publicToken: normalizePublicToken("", id),
+    allowedOrigins: [],
     company: clone(defaultCompany),
     settings: clone(defaultBotSettings),
     faqs: clone(defaultFaqs),
@@ -528,8 +1137,11 @@ function createBusiness(id) {
 }
 
 function normalizeBusiness(business, fallbackId) {
+  const id = sanitizeId(business.id || fallbackId || "demo");
   return {
-    id: sanitizeId(business.id || fallbackId || "demo"),
+    id,
+    publicToken: normalizePublicToken(business.publicToken, id),
+    allowedOrigins: normalizeAllowedOrigins(business.allowedOrigins),
     company: normalizeCompany(business.company || {}),
     settings: normalizeBotSettings(business.settings || {}),
     faqs: Array.isArray(business.faqs) ? business.faqs.map(normalizeFaq).filter(Boolean) : clone(defaultFaqs),
@@ -549,14 +1161,98 @@ function normalizeBusiness(business, fallbackId) {
 }
 
 function normalizeCompany(company) {
+  const name = String(company.name || defaultCompany.name).trim();
+  const welcome = String(company.welcome || defaultCompany.welcome).trim();
+
   return {
-    name: String(company.name || defaultCompany.name).trim(),
+    name,
     industry: String(company.industry || defaultCompany.industry).trim(),
     tone: String(company.tone || defaultCompany.tone).trim(),
     serviceHours: String(company.serviceHours || defaultCompany.serviceHours).trim(),
     contact: String(company.contact || defaultCompany.contact).trim(),
-    welcome: String(company.welcome || defaultCompany.welcome).trim()
+    welcome,
+    widget: normalizeWidgetConfig(company.widget, { name, welcome })
   };
+}
+
+function normalizePublicToken(value, businessId) {
+  const token = String(value || "").trim();
+  if (/^[a-zA-Z0-9_-]{16,96}$/.test(token)) return token;
+  return createDefaultPublicToken(businessId);
+}
+
+function createDefaultPublicToken(businessId) {
+  const digest = crypto
+    .createHash("sha256")
+    .update(`widget:${sanitizeId(businessId)}:public-token`)
+    .digest("hex")
+    .slice(0, 32);
+  return `pk_${digest}`;
+}
+
+function normalizeAllowedOrigins(value) {
+  const list = Array.isArray(value)
+    ? value
+    : String(value || "")
+      .split(/[\n,，\s]+/);
+
+  return Array.from(new Set(
+    list
+      .map((origin) => String(origin || "").trim().replace(/\/+$/, "").toLowerCase())
+      .filter((origin) => /^https?:\/\/[a-z0-9.-]+(?::\d+)?$/i.test(origin))
+  )).slice(0, 20);
+}
+
+function normalizeWidgetConfig(widget, fallback = {}) {
+  const parsed = widget && typeof widget === "object" ? widget : {};
+  const name = String(parsed.name || parsed.title || fallback.name || defaultWidgetConfig.name)
+    .trim()
+    .slice(0, 40);
+  const welcome = String(parsed.welcome || fallback.welcome || defaultWidgetConfig.welcome)
+    .trim()
+    .slice(0, 220);
+  const hasQuickQuestions =
+    Object.prototype.hasOwnProperty.call(parsed, "quickQuestions") ||
+    Object.prototype.hasOwnProperty.call(parsed, "quickReplies") ||
+    Object.prototype.hasOwnProperty.call(parsed, "questions");
+  const quickQuestions = normalizeWidgetQuickQuestions(parsed.quickQuestions || parsed.quickReplies || parsed.questions);
+
+  return {
+    name: name || defaultWidgetConfig.name,
+    themeColor: normalizeThemeColor(parsed.themeColor || parsed.accent || parsed.color),
+    position: normalizeWidgetPosition(parsed.position),
+    welcome: welcome || defaultWidgetConfig.welcome,
+    quickQuestions: hasQuickQuestions ? quickQuestions : clone(defaultWidgetConfig.quickQuestions)
+  };
+}
+
+function normalizeThemeColor(value) {
+  const text = String(value || "").trim();
+  if (/^#[0-9a-f]{6}$/i.test(text)) return text.toLowerCase();
+  if (/^#[0-9a-f]{3}$/i.test(text)) {
+    return `#${text.slice(1).split("").map((char) => `${char}${char}`).join("")}`.toLowerCase();
+  }
+  return defaultWidgetConfig.themeColor;
+}
+
+function normalizeWidgetPosition(value) {
+  const text = String(value || "").trim();
+  if (["bottom-right", "bottom-left"].includes(text)) return text;
+  if (text === "right") return "bottom-right";
+  if (text === "left") return "bottom-left";
+  return defaultWidgetConfig.position;
+}
+
+function normalizeWidgetQuickQuestions(value) {
+  const list = Array.isArray(value)
+    ? value
+    : String(value || "")
+      .split(/[\n|,，、]+/);
+
+  return list
+    .map((item) => String(item || "").trim().slice(0, 40))
+    .filter(Boolean)
+    .slice(0, 6);
 }
 
 function normalizeBotSettings(settings) {
@@ -852,6 +1548,7 @@ function escapeCsvCell(value) {
 function formatLeadSource(value) {
   const text = String(value || "");
   if (text === "admin-preview") return "后台预览";
+  if (text === "portal-preview") return "企业工作台预览";
   if (text === "widget") return "网站组件";
   if (text === "local-preview") return "本地预览";
   if (text.startsWith("http")) return "客户网站";
@@ -1320,44 +2017,57 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function hashToken(token) {
+  return crypto.createHash("sha256").update(String(token || ""), "utf8").digest("hex");
+}
+
+function safeEqual(left, right) {
+  const leftBuffer = Buffer.from(String(left || ""));
+  const rightBuffer = Buffer.from(String(right || ""));
+  if (leftBuffer.length !== rightBuffer.length) return false;
+  return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function getBearerToken(req) {
+  const header = String(req.get("authorization") || "").trim();
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  return match ? match[1].trim() : "";
+}
+
 function setCorsHeaders(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Token, X-Widget-Token");
   res.setHeader("Access-Control-Max-Age", "86400");
 }
 
 async function readJsonBody(req) {
-  const chunks = [];
-  for await (const chunk of req) {
-    chunks.push(chunk);
-    if (Buffer.concat(chunks).length > 1024 * 1024) {
-      throw new Error("Request body too large");
-    }
-  }
-
-  const raw = Buffer.concat(chunks).toString("utf8").trim();
-  if (!raw) return {};
-  return JSON.parse(raw);
+  return req.body && typeof req.body === "object" ? req.body : {};
 }
 
 function sendJson(res, statusCode, payload) {
   setCorsHeaders(res);
-  res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
-  res.end(JSON.stringify(payload));
+  res.status(statusCode).json(payload);
 }
 
 function sendText(res, statusCode, text) {
-  res.writeHead(statusCode, { "Content-Type": "text/plain; charset=utf-8" });
-  res.end(text);
+  res.status(statusCode).type("text/plain; charset=utf-8").send(text);
 }
 
 function sendCsv(res, statusCode, csv, filename) {
   setCorsHeaders(res);
   res.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
-  res.writeHead(statusCode, {
-    "Content-Type": "text/csv; charset=utf-8",
-    "Content-Disposition": `attachment; filename="${filename}"`
-  });
-  res.end(csv);
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  res.status(statusCode).type("text/csv; charset=utf-8").send(csv);
+}
+
+function sendStaticFile(res, filePath, cacheControl) {
+  res.setHeader("Cache-Control", cacheControl);
+  res.sendFile(filePath);
+}
+
+function asyncHandler(handler) {
+  return (req, res, next) => {
+    Promise.resolve(handler(req, res, next)).catch(next);
+  };
 }

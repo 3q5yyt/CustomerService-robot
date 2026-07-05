@@ -1,4 +1,5 @@
 (function () {
+  const defaultQuickQuestions = ["数智云智能客服机器人是什么？", "怎么接入企业官网？", "怎么收费？", "我要预约演示"];
   const script = document.currentScript;
   const config = readConfig(script);
   let faqs = readFaqs(script);
@@ -7,7 +8,7 @@
   let currentIntent = "";
   const visitorId = getOrCreateVisitorId(`nimble-widget-visitor-${config.businessId}`);
 
-  injectStyles(config.accent);
+  injectStyles();
 
   const root = document.createElement("div");
   root.className = "nw-root";
@@ -38,7 +39,7 @@
   const form = root.querySelector(".nw-form");
   const input = root.querySelector("input");
 
-  title.textContent = config.company;
+  applyWidgetConfig();
   boot();
 
   launcher.addEventListener("click", () => setOpen(!open));
@@ -64,7 +65,7 @@
 
   async function boot() {
     await loadRemoteConfig();
-    title.textContent = config.company;
+    applyWidgetConfig();
     addMessage("bot", config.welcome);
     renderQuickReplies();
   }
@@ -73,16 +74,28 @@
     if (!config.apiBase) return;
 
     try {
-      const remote = await requestJson(`/api/businesses/${encodeURIComponent(config.businessId)}/public`);
-      config.company = (remote.company && remote.company.name) || config.company;
-      config.industry = (remote.company && remote.company.industry) || config.industry;
-      config.contact = (remote.company && remote.company.contact) || config.contact;
-      config.welcome = (remote.company && remote.company.welcome) || config.welcome;
+      const remote = await requestJson(`/api/widget/businesses/${encodeURIComponent(config.businessId)}/public`);
+      const remoteCompany = remote.company || {};
+      const remoteWidget = remoteCompany.widget || {};
+      config.company = remoteWidget.name || remoteCompany.name || config.company;
+      config.industry = remoteCompany.industry || config.industry;
+      config.contact = remoteCompany.contact || config.contact;
+      config.welcome = remoteWidget.welcome || remoteCompany.welcome || config.welcome;
+      config.accent = normalizeThemeColor(remoteWidget.themeColor || remoteWidget.accent || remoteWidget.color || config.accent);
+      config.position = normalizePosition(remoteWidget.position || config.position);
+      config.quickQuestions = normalizeQuickQuestions(remoteWidget.quickQuestions, config.quickQuestions);
       config.replyMode = normalizeReplyMode(remote.settings && remote.settings.replyMode ? remote.settings.replyMode : config.replyMode);
       faqs = Array.isArray(remote.faqs) && remote.faqs.length > 0 ? remote.faqs : faqs;
     } catch (error) {
       // Keep the script-configured fallback so the widget can still answer basic questions.
     }
+  }
+
+  function applyWidgetConfig() {
+    root.style.setProperty("--nw-accent", config.accent);
+    root.classList.remove("nw-position-bottom-right", "nw-position-bottom-left");
+    root.classList.add(`nw-position-${config.position}`);
+    title.textContent = config.company;
   }
 
   function setOpen(nextOpen) {
@@ -93,7 +106,9 @@
 
   function renderQuickReplies() {
     quick.innerHTML = "";
-    ["数智云智能客服机器人是什么？", "怎么接入企业官网？", "我要预约演示"].forEach((label) => {
+    const questions = normalizeQuickQuestions(config.quickQuestions, []);
+    quick.hidden = questions.length === 0;
+    questions.forEach((label) => {
       const button = document.createElement("button");
       button.type = "button";
       button.textContent = label;
@@ -123,7 +138,7 @@
   async function getReply(text) {
     if (config.apiBase) {
       try {
-        const response = await requestJson(`/api/businesses/${encodeURIComponent(config.businessId)}/chat`, {
+        const response = await requestJson(`/api/widget/businesses/${encodeURIComponent(config.businessId)}/chat`, {
           method: "POST",
           body: JSON.stringify({
             message: text,
@@ -234,15 +249,22 @@
 
   function readConfig(currentScript) {
     const dataset = currentScript ? currentScript.dataset : {};
+    const hasQuickQuestions = Object.prototype.hasOwnProperty.call(dataset, "quickQuestions");
+    const quickQuestions = hasQuickQuestions
+      ? dataset.quickQuestions
+      : dataset.quickReplies;
     return {
       businessId: dataset.businessId || "demo",
       apiBase: normalizeBaseUrl(dataset.apiBase || inferApiBase(currentScript)),
-      company: dataset.company || "在线客服",
+      publicToken: dataset.publicToken || "",
+      company: dataset.widgetName || dataset.company || "在线客服",
       industry: dataset.industry || "通用服务",
       contact: dataset.contact || "",
       welcome: dataset.welcome || "你好，我是智能客服。请问有什么可以帮你？",
       replyMode: normalizeReplyMode(dataset.replyMode || "faq_ai"),
-      accent: dataset.color || "#0f8f7e"
+      accent: normalizeThemeColor(dataset.themeColor || dataset.color || "#0f8f7e"),
+      position: normalizePosition(dataset.position || "bottom-right"),
+      quickQuestions: normalizeQuickQuestions(hasQuickQuestions && !String(quickQuestions || "").trim() ? [] : quickQuestions, defaultQuickQuestions)
     };
   }
 
@@ -340,6 +362,7 @@
       ...options,
       headers: {
         "Content-Type": "application/json",
+        ...(config.publicToken ? { "X-Widget-Token": config.publicToken } : {}),
         ...(options.headers || {})
       }
     });
@@ -365,6 +388,38 @@
     return String(value || "").replace(/\/+$/, "");
   }
 
+  function normalizeThemeColor(value) {
+    const text = String(value || "").trim();
+    if (/^#[0-9a-f]{6}$/i.test(text)) return text.toLowerCase();
+    if (/^#[0-9a-f]{3}$/i.test(text)) {
+      return `#${text.slice(1).split("").map((char) => `${char}${char}`).join("")}`.toLowerCase();
+    }
+    return "#0f8f7e";
+  }
+
+  function normalizePosition(value) {
+    const text = String(value || "").trim();
+    if (["bottom-right", "bottom-left"].includes(text)) return text;
+    if (text === "right") return "bottom-right";
+    if (text === "left") return "bottom-left";
+    return "bottom-right";
+  }
+
+  function normalizeQuickQuestions(value, fallback = defaultQuickQuestions) {
+    const hasExplicitValue = Array.isArray(value) || (value !== undefined && value !== null && String(value).trim() !== "");
+    const source = Array.isArray(value)
+      ? value
+      : String(value || "")
+        .split(/[\n|,，、]+/);
+    const questions = source
+      .map((item) => String(item || "").trim().slice(0, 40))
+      .filter(Boolean)
+      .slice(0, 6);
+
+    if (questions.length > 0) return questions;
+    return hasExplicitValue ? [] : fallback.slice(0, 6);
+  }
+
   function normalizeReplyMode(value) {
     return ["faq_first", "faq_ai", "lead_only"].includes(value) ? value : "faq_ai";
   }
@@ -388,11 +443,13 @@
     return `visitor-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
 
-  function injectStyles(accent) {
+  function injectStyles() {
     const style = document.createElement("style");
     style.textContent = `
-      .nw-root { position: fixed; right: 20px; bottom: 20px; z-index: 2147483000; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Microsoft YaHei", sans-serif; color: #15231f; }
-      .nw-launcher { width: 62px; height: 62px; border: 0; border-radius: 50%; background: ${accent}; color: #fff; font-weight: 800; box-shadow: 0 14px 34px rgba(24, 62, 53, .22); cursor: pointer; }
+      .nw-root { --nw-accent: #0f8f7e; position: fixed; z-index: 2147483000; display: flex; flex-direction: column; align-items: flex-end; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Microsoft YaHei", sans-serif; color: #15231f; }
+      .nw-position-bottom-right { right: 20px; bottom: 20px; }
+      .nw-position-bottom-left { left: 20px; bottom: 20px; align-items: flex-start; }
+      .nw-launcher { width: 62px; height: 62px; border: 0; border-radius: 50%; background: var(--nw-accent); color: #fff; font-weight: 800; box-shadow: 0 14px 34px rgba(24, 62, 53, .22); cursor: pointer; }
       .nw-panel { display: none; width: min(360px, calc(100vw - 32px)); height: min(560px, calc(100vh - 110px)); margin-bottom: 12px; border: 1px solid #dce8e3; border-radius: 8px; overflow: hidden; background: #fff; box-shadow: 0 18px 48px rgba(24, 62, 53, .18); }
       .nw-panel.is-open { display: grid; grid-template-rows: auto 1fr auto auto; }
       .nw-header { display: flex; align-items: center; justify-content: space-between; padding: 13px 14px; background: #f6fbf9; border-bottom: 1px solid #dce8e3; }
@@ -402,15 +459,16 @@
       .nw-loading { color: #64736d; }
       .nw-loading::after { content: ""; display: inline-block; width: 1.2em; text-align: left; animation: nw-dots 1.2s steps(4, end) infinite; }
       .nw-bot { align-self: flex-start; background: #ddf6f1; }
-      .nw-user { align-self: flex-end; background: ${accent}; color: #fff; }
+      .nw-user { align-self: flex-end; background: var(--nw-accent); color: #fff; }
       .nw-quick { display: flex; flex-wrap: wrap; gap: 7px; padding: 10px 12px; border-top: 1px solid #dce8e3; }
-      .nw-quick button { border: 1px solid #dce8e3; border-radius: 999px; padding: 6px 9px; background: #fff; color: #0a6f62; font-weight: 700; cursor: pointer; }
+      .nw-quick[hidden] { display: none; }
+      .nw-quick button { border: 1px solid #dce8e3; border-radius: 999px; padding: 6px 9px; background: #fff; color: var(--nw-accent); font-weight: 700; cursor: pointer; }
       .nw-form { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 12px; border-top: 1px solid #dce8e3; }
       .nw-form input { min-width: 0; border: 1px solid #dce8e3; border-radius: 8px; padding: 0 10px; min-height: 38px; outline: none; }
-      .nw-form button { border: 0; border-radius: 8px; padding: 0 12px; background: ${accent}; color: #fff; font-weight: 800; cursor: pointer; }
+      .nw-form button { border: 0; border-radius: 8px; padding: 0 12px; background: var(--nw-accent); color: #fff; font-weight: 800; cursor: pointer; }
       .nw-form input:disabled, .nw-form button:disabled { opacity: .62; cursor: wait; }
       @keyframes nw-dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75%, 100% { content: "..."; } }
-      @media (max-width: 520px) { .nw-root { right: 12px; bottom: 12px; } .nw-panel { width: calc(100vw - 24px); } }
+      @media (max-width: 520px) { .nw-position-bottom-right { right: 12px; bottom: 12px; } .nw-position-bottom-left { left: 12px; bottom: 12px; } .nw-panel { width: calc(100vw - 24px); } }
     `;
     document.head.append(style);
   }

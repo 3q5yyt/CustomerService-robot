@@ -12,8 +12,8 @@ data/*.json
 !.env.example
 
 # Legacy static admin files kept locally for reference
-app.js
-styles.css
+/app.js
+/styles.css
 本地留存文件清单.md
 
 # OS/editor files

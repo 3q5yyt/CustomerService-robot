@@ -9,14 +9,25 @@ export const defaultAnswerRules = [
   "不编造客户案例、合同承诺、上线时间或未确认功能。"
 ].join("\n");
 
+export const defaultWidgetConfig = {
+  name: "数智云在线客服",
+  themeColor: "#1a73e8",
+  position: "bottom-right",
+  welcome: "欢迎咨询数智云智能客服机器人，请问您想了解功能、价格、接入方式，还是预约演示？",
+  quickQuestions: ["数智云智能客服机器人是什么？", "怎么接入企业官网？", "怎么收费？", "我要预约演示"]
+};
+
 export const defaultState = {
+  publicToken: "",
+  allowedOrigins: [],
   company: {
     name: "数智云智能技术工作室",
     industry: "人工智能",
     tone: "专业简洁",
     serviceHours: "工作日 09:00-18:00，非工作时间自动收集线索",
     contact: "电话：18279169910 / 微信：zh101136 / QQ：481259634",
-    welcome: "欢迎咨询数智云智能客服机器人，请问您想了解功能、价格、接入方式，还是预约演示？"
+    welcome: "欢迎咨询数智云智能客服机器人，请问您想了解功能、价格、接入方式，还是预约演示？",
+    widget: defaultWidgetConfig
   },
   settings: {
     replyMode: "faq_ai",

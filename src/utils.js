@@ -1,4 +1,4 @@
-import { defaultAnswerRules, defaultState } from "./defaults.js";
+import { defaultAnswerRules, defaultState, defaultWidgetConfig } from "./defaults.js";
 
 export function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -10,10 +10,20 @@ export function cn(...classes) {
 
 export function normalizeState(value) {
   const parsed = value || {};
+  const company = parsed.company || {};
   return {
     ...clone(defaultState),
     ...parsed,
-    company: { ...defaultState.company, ...(parsed.company || {}) },
+    publicToken: String(parsed.publicToken || defaultState.publicToken || ""),
+    allowedOrigins: Array.isArray(parsed.allowedOrigins) ? parsed.allowedOrigins : [],
+    company: {
+      ...defaultState.company,
+      ...company,
+      widget: normalizeWidgetConfig(company.widget, {
+        name: company.name || defaultState.company.name,
+        welcome: company.welcome || defaultState.company.welcome
+      })
+    },
     settings: {
       ...defaultState.settings,
       ...(parsed.settings || {}),
@@ -24,6 +34,58 @@ export function normalizeState(value) {
     unmatchedQuestions: Array.isArray(parsed.unmatchedQuestions) ? parsed.unmatchedQuestions : [],
     stats: { ...defaultState.stats, ...(parsed.stats || {}) }
   };
+}
+
+export function normalizeWidgetConfig(widget, fallback = {}) {
+  const parsed = widget && typeof widget === "object" ? widget : {};
+  const name = String(parsed.name || parsed.title || fallback.name || defaultWidgetConfig.name)
+    .trim()
+    .slice(0, 40);
+  const welcome = String(parsed.welcome || fallback.welcome || defaultWidgetConfig.welcome)
+    .trim()
+    .slice(0, 220);
+  const hasQuickQuestions =
+    Object.prototype.hasOwnProperty.call(parsed, "quickQuestions") ||
+    Object.prototype.hasOwnProperty.call(parsed, "quickReplies") ||
+    Object.prototype.hasOwnProperty.call(parsed, "questions");
+  const quickQuestions = normalizeWidgetQuickQuestions(parsed.quickQuestions || parsed.quickReplies || parsed.questions);
+
+  return {
+    name: name || defaultWidgetConfig.name,
+    themeColor: normalizeThemeColor(parsed.themeColor || parsed.accent || parsed.color),
+    position: normalizeWidgetPosition(parsed.position),
+    welcome: welcome || defaultWidgetConfig.welcome,
+    quickQuestions: hasQuickQuestions ? quickQuestions : clone(defaultWidgetConfig.quickQuestions)
+  };
+}
+
+function normalizeThemeColor(value) {
+  const text = String(value || "").trim();
+  if (/^#[0-9a-f]{6}$/i.test(text)) return text.toLowerCase();
+  if (/^#[0-9a-f]{3}$/i.test(text)) {
+    return `#${text.slice(1).split("").map((char) => `${char}${char}`).join("")}`.toLowerCase();
+  }
+  return defaultWidgetConfig.themeColor;
+}
+
+function normalizeWidgetPosition(value) {
+  const text = String(value || "").trim();
+  if (["bottom-right", "bottom-left"].includes(text)) return text;
+  if (text === "right") return "bottom-right";
+  if (text === "left") return "bottom-left";
+  return defaultWidgetConfig.position;
+}
+
+function normalizeWidgetQuickQuestions(value) {
+  const list = Array.isArray(value)
+    ? value
+    : String(value || "")
+      .split(/[\n|,，、]+/);
+
+  return list
+    .map((item) => String(item || "").trim().slice(0, 40))
+    .filter(Boolean)
+    .slice(0, 6);
 }
 
 export function resolveApiBase() {
@@ -80,7 +142,16 @@ export function requestJson(apiBase, path, options = {}) {
   }).then(async (response) => {
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(errorText || `HTTP ${response.status}`);
+      let message = errorText || `HTTP ${response.status}`;
+      try {
+        const parsed = JSON.parse(errorText);
+        message = parsed.error || message;
+      } catch (error) {
+        // Keep the raw response text.
+      }
+      const requestError = new Error(message);
+      requestError.status = response.status;
+      throw requestError;
     }
     return response.json();
   });
@@ -112,6 +183,7 @@ export function normalizeReplySource(mode) {
 export function formatSource(value) {
   const text = String(value || "");
   if (text === "admin-preview") return "后台预览";
+  if (text === "portal-preview") return "企业工作台预览";
   if (text === "widget") return "网站组件";
   if (text === "local-preview") return "本地预览";
   if (text.startsWith("http")) return "客户网站";
